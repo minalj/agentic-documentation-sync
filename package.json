@@ -1,0 +1,19 @@
+{
+  "name": "agentic-documentation-sync",
+  "version": "1.0.0",
+  "description": "A sample application used to demonstrate automated technical documentation synchronization using EliteA.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "jest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "jest": "^30.0.0"
+  }
+}
