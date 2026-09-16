@@ -1,74 +1,98 @@
 # Automated Documentation Sync Architecture
 
-## 1. Architectural Overview
+## 1. System Architecture Overview
 
-Automated Documentation Sync is an agentic, staged workflow coordinated by an orchestration layer. It processes explicitly authorized GitHub repositories, reads the mandatory Confluence template, analyzes supported repository content, generates a structured Markdown draft, waits for explicit reviewer approval, converts the approved draft to the required Confluence representation, and synchronizes it to Confluence Cloud.
+Automated Documentation Sync uses a staged agentic pipeline coordinated by a Workflow Orchestrator. It processes explicitly authorized GitHub repositories, reads the mandatory Confluence template, analyzes supported repository evidence, generates a structured Markdown draft, validates it, presents it for explicit reviewer approval, and publishes approved content to Confluence Cloud.
 
-The architecture separates repository analysis, template handling, documentation generation, review, and publishing. Each repository has an independent processing state so that one repository failure does not stop other repositories in the same execution.
+Each repository is processed independently so one repository failure does not stop other repositories in the same execution.
 
 ```mermaid
 flowchart LR
-	User[Authorized user] --> Orchestrator[Workflow Orchestrator]
-	Orchestrator --> Access[Authorization and input validation]
-	Access --> GitHub[GitHub Repository Adapter]
-	Orchestrator --> TemplateReader[Template Reader Agent]
-	GitHub --> Sanitizer[File filtering and secret redaction]
-	Sanitizer --> Analyzer[Repository Analyzer Agent]
-	TemplateReader --> Generator[Documentation Generator Agent]
-	Analyzer --> Generator
-	Generator --> Draft[Markdown draft and validation summary]
-	Draft --> Review[Review and Operations Interface]
-	Review -->|Reject or regenerate| Generator
-	Review -->|Explicit approval| Validator[Approval and validation gate]
-	Validator --> Publisher[Confluence Publisher Agent]
-	Publisher --> Confluence[Confluence Cloud]
-	Orchestrator --> State[Durable execution state]
-	Orchestrator --> Status[Status, monitoring, and audit]
-	TemplateReader --> Status
-	Analyzer --> Status
-	Generator --> Status
-	Publisher --> Status
-	Monitor[Monitoring and alerting] --> Status
+    User[Authorized user] --> Orchestrator[Workflow Orchestrator]
+    Orchestrator --> Auth[Authorization and input validation]
+    Auth --> GitHub[GitHub repository adapter]
+    GitHub --> Filter[File filtering and secret redaction]
+    Filter --> Analyzer[Repository Analyzer]
+    Orchestrator --> Reader[Template Reader]
+    Reader --> Generator[Documentation Generator]
+    Analyzer --> Generator
+    Generator --> Validator[Documentation validation]
+    Validator --> Draft[Markdown preview and validation summary]
+    Draft --> Review[Documentation Author/Reviewer]
+    Review -->|Reject or regenerate| Generator
+    Review -->|Explicit approval| Gate[Approval gate]
+    Gate --> Publisher[Confluence Publisher]
+    Publisher --> Confluence[Confluence Cloud]
+    Orchestrator --> State[Durable Execution State]
+    Orchestrator --> Status[Status report and audit trail]
+    Orchestrator --> Monitor[Monitoring/Alerting]
+    State --> Orchestrator
+    Auth --> Status
+    Filter --> Status
+    Analyzer --> Status
+    Generator --> Status
+    Publisher --> Status
+    Status --> Monitor
+    Monitor --> Orchestrator
 ```
 
-## 2. System Components
+The architecture is limited to behavior supported by `requirements.md`. The following design choices are **Not Defined** by the requirements and must be selected before implementation: LLM provider/model/prompt configuration, exact Confluence representation and parser, validation tooling, persistence technology, queue/orchestration technology, user-interface technology, credential-management product, logging/monitoring platform, retry counts, retention duration, and exact status/audit storage formats.
+
+## 2. Major Components and Responsibilities
 
 ### 2.1 Workflow Orchestrator
 
-The Workflow Orchestrator owns execution lifecycle and coordination. It shall:
-
 - Accept requests for one or more explicitly authorized GitHub repositories.
 - Create and propagate a unique execution ID.
-- Record the requesting identity and processing timestamps.
-- Coordinate independent repository jobs and preserve failure isolation.
-- Enforce stage timeouts, processing limits, and configured concurrency.
-- Prevent publishing until explicit reviewer approval and successful validation.
-- Enforce role-based access and approval state transitions.
-- Schedule repository jobs with bounded concurrency, backpressure, cancellation, and per-job resource limits.
-- Resume or safely reconcile interrupted stages from durable execution state.
-- Aggregate status, warnings, errors, metrics, and audit events.
+- Record requesting identity and processing timestamps.
+- Coordinate the required processing stages.
+- Keep repository processing independent.
+- Enforce approval before publishing.
+- Aggregate repository statuses, warnings, errors, timestamps, and duration.
+- Apply configured concurrency, processing-time, API-call, and resource limits.
+
+The exact orchestration framework and durable state technology are **Not Defined**.
 
 ### 2.2 Authorization and Input Validation
 
-This boundary verifies that repositories are explicitly authorized and that the request contains a valid repository reference and branch or commit where provided. It enforces RBAC for repository selection, review, approval, publishing, administration, and audit access. It also treats repository content as untrusted input and applies validation before content is passed to agents or external operations.
+- Verify that repositories are explicitly authorized by a Repository Administrator.
+- Respect existing repository permissions.
+- Validate repository references, branch or commit values, and user/service role context.
+- Enforce permissions for the defined roles.
+- Treat repository content as untrusted input before it is passed to prompts, tools, or publishing operations.
 
 ### 2.3 GitHub Repository Adapter
 
-The adapter retrieves authorized GitHub repository content and repository metadata at the requested branch or commit. It is responsible for GitHub authentication through externally managed credentials, access/error reporting, and honoring repository and API limits.
+- Retrieve authorized GitHub repository content and metadata.
+- Support the requested branch or commit.
+- Provide source files, configuration files, dependency files, README files, and relevant documentation to the analysis boundary.
+- Report repository access and network failures.
+- Apply configured repository, file, API-call, and processing limits.
+
+The GitHub authentication protocol and client library are **Not Defined** beyond an authenticated connection with appropriate permissions.
 
 ### 2.4 File Filtering and Secret Redaction
 
-This boundary identifies supported content and excludes binary, generated, vendor, and irrelevant files where appropriate. It records skipped files and reasons. It detects and redacts passwords, API keys, tokens, private keys, credentials, and other secrets before repository content is included in LLM prompts, logs, intermediate artifacts, errors, or generated documentation.
+- Identify supported Java, JavaScript/TypeScript, and Python content.
+- Skip unsupported files or languages and record each file and reason.
+- Exclude binary, generated, vendor, and irrelevant files where appropriate.
+- Validate and sanitize untrusted repository content.
+- Detect and redact passwords, API keys, tokens, private keys, credentials, and other secrets before content is included in LLM prompts, logs, intermediate artifacts, errors, or generated documentation.
+- Identify required secrets or configuration without exposing their values.
 
-### 2.5 Template Reader Agent
+### 2.5 Template Reader
 
-The Template Reader is the mandatory source of the approved documentation structure. It reads and parses the `Technical-App-Manifest-v1` template from Confluence Cloud and produces a normalized template model for downstream generation.
+- Read the existing Confluence Cloud template `Technical-App-Manifest-v1`.
+- Parse its predefined sections and placeholders.
+- Return the template structure and version information to the Documentation Generator.
+- Treat template reading and parsing as mandatory.
+- Stop the workflow and prevent publishing if the template cannot be read or parsed.
 
-If the template cannot be read or parsed, the orchestrator stops the workflow and prevents publishing.
+The exact Confluence template representation and parser are **Not Defined**.
 
-### 2.6 Repository Analyzer Agent
+### 2.6 Repository Analyzer
 
-The Repository Analyzer examines sanitized, eligible repository content and extracts application and repository information. It supports Java, JavaScript/TypeScript, and Python projects and produces structured findings for:
+The Repository Analyzer receives authorized, filtered, and redacted repository content. It extracts:
 
 - System purpose.
 - Architecture and components.
@@ -76,212 +100,287 @@ The Repository Analyzer examines sanitized, eligible repository content and extr
 - Technology stack and dependencies.
 - Setup and installation.
 - Configuration without secret values.
-- Deployment and CI/CD information.
-- Testing.
-- Existing documentation.
+- Deployment and infrastructure information.
+- Testing information.
+- Existing documentation and developer notes.
 - Risks and gaps.
-- Repository metadata and source references.
+- Repository structure and metadata.
 
-The agent reports `Not available/Not found in repository` when evidence is absent and must not invent unsupported details.
+It must attach source references where available and report `Not available/Not found in repository` when evidence is absent. It must not infer or fabricate unsupported information.
 
-### 2.7 Documentation Generator Agent
+### 2.7 Documentation Generator
 
-The Documentation Generator combines the normalized template model with analyzer findings. It produces a structured Markdown preview/draft that preserves the template sections, placeholders, and required coverage. It also produces a validation summary covering required sections, placeholders, secret redaction, unsupported claims, and format compatibility.
+The Documentation Generator combines the parsed template and analyzer findings to:
 
-The generator retains successful findings when other extraction areas are incomplete. A generation failure is recorded and prevents publishing.
+- Preserve the `Technical-App-Manifest-v1` structure, sections, and placeholders.
+- Populate sections only from supported repository evidence.
+- Include source references where available.
+- Mark missing information explicitly.
+- Generate a structured Markdown preview/draft.
+- Retain successfully extracted information when other areas are incomplete.
 
-### 2.8 Review and Approval Gate
+The LLM provider, model, prompt format, and generation implementation are **Not Defined**.
 
-The review boundary presents the Markdown draft and validation summary to a Documentation Author/Reviewer. The reviewer may edit, approve, reject, or request regeneration. Rejected content returns for correction or regeneration and is never published.
+### 2.8 Documentation Validator
 
-The gate records reviewer identity, decision, timestamp, and approval details. Only explicit approval followed by successful validation can release the publishing step.
+The validator checks:
 
-### 2.9 Confluence Publisher Agent
+- Required sections.
+- Template structure and placeholders.
+- Secret redaction.
+- Unsupported claims.
+- Format compatibility with the required Confluence representation.
 
-The Confluence Publisher converts the approved Markdown draft to the required Confluence representation and synchronizes it to Confluence Cloud. It targets the `Templates` space under the `Technical-App-Manifest-v1` parent page. It creates a page when no matching page exists and updates the existing matching page to avoid duplicates.
+It produces a validation summary for the Documentation Author/Reviewer and the approval gate. Exact validation rules and tooling are **Not Defined** beyond these required checks.
 
-The publisher records the Confluence page ID, create/update operation, publishing result, HTTP status where applicable, errors, and retries.
+### 2.9 Review and Approval Interface
 
-### 2.10 Status, Observability, and Audit Store
+- Present the Markdown preview/draft and validation summary.
+- Allow a Documentation Author/Reviewer to view, edit, approve, reject, or request regeneration.
+- Record reviewer identity, decision, approval details, and timestamps.
+- Prevent rejected or unapproved documentation from publishing.
+- Provide status, warnings, errors, review state, and publishing state as required.
 
-This component records structured status and audit data without credentials or sensitive content. It supports:
+The user-interface technology and interaction protocol are **Not Defined**.
+
+### 2.10 Approval Gate
+
+The approval gate releases publishing only when both conditions are true:
+
+1. Explicit reviewer approval exists.
+2. Documentation validation succeeds.
+
+No publishing occurs before approval. Rejected documentation returns for correction or regeneration.
+
+### 2.11 Confluence Publisher
+
+- Convert the approved Markdown draft to the required Confluence representation.
+- Use the authenticated Confluence Cloud connection.
+- Target the `Templates` space.
+- Use `Technical-App-Manifest-v1` as the parent page.
+- Create a page when no matching page exists.
+- Update the existing matching page when one exists.
+- Avoid duplicate pages.
+- Preserve applicable Confluence access restrictions.
+- Record page ID, create/update operation, result, HTTP status, errors, retries, and timestamps.
+
+The exact matching-page key, duplicate-prevention mechanism, Confluence conversion library, and authentication protocol are **Not Defined**.
+
+### 2.12 Status and Audit Store
+
+The status and audit boundary records, without credentials or sensitive content:
 
 - Repository outcome: `Success`, `Partial Success`, `Skipped`, or `Failed`.
 - Analyzed and skipped files and languages.
-- Extraction, generation, review, and publishing status.
-- Warnings, redacted errors, timestamps, and processing duration.
-- Execution IDs, repository/file counts, retries, and Confluence results.
-- User/service identity, template version, reviewer decision, page ID, and create/update operation.
+- Extraction, generation, review, and publishing statuses.
+- Warnings, errors, start/end timestamps, and processing duration.
+- Execution ID.
+- Repository metadata and analysis timestamp.
+- User/service identity.
+- Template version.
+- Reviewer and approval details.
+- Confluence page ID and create/update operation.
+- Publishing results, errors, and retries.
 
-### 2.11 Review and Operations Interface
+The exact storage technology, schemas, retention duration, and audit format are **Not Defined**.
 
-This user-facing interface presents Markdown drafts, validation summaries, progress, warnings, errors, review state, and publishing state. It allows an authorized Documentation Author/Reviewer to edit, approve, reject, or request regeneration. It applies role checks and records reviewer identity, decision, timestamp, and approval details. Read-only status and audit views are available to the Read-Only Auditor according to the defined permissions.
+## 3. Agent Responsibilities and Communication
 
-### 2.12 Durable Execution State
-
-This component persists execution and repository stage state, including authorization, template reading, analysis, generation, review, validation, and publishing. State transitions are associated with the execution ID and persisted before dependent stages proceed. Recovery resumes safe incomplete work or reconciles ambiguous external operations before retrying; an interrupted execution cannot bypass approval.
-
-### 2.13 Monitoring and Alerting
-
-This component evaluates structured events and metrics to detect failed or slow jobs, repeated API failures, authentication problems, resource-limit violations, and publishing failures. It exposes operational alerts and status indicators while keeping audit records separate from operational metrics where retention or access requirements differ.
-
-## 3. Agent Communication Contracts
-
-Agents communicate through versioned, schema-validated, execution-scoped messages. Each message carries the execution ID, repository identifier, branch or commit, stage, timestamp, and redacted diagnostics where applicable. Invalid or unsupported messages are rejected, recorded as contract-validation failures, and not passed downstream.
+Agents communicate through execution-scoped structured data. Each exchange should carry the execution ID, repository, branch or commit where available, processing stage, timestamp, and redacted diagnostics.
 
 | Agent | Inputs | Outputs |
 | --- | --- | --- |
-| Template Reader | Confluence Cloud template reference, template version, execution context | Parsed template model, section and placeholder definitions, template metadata, or a redacted template-read/parse error |
-| Repository Analyzer | Authorized repository content after filtering and redaction, repository metadata, branch or commit, execution context | Structured extraction findings, source references, skipped-file records, missing-value markers, repository metadata, warnings, and analysis status |
-| Documentation Generator | Parsed template model, analyzer findings, source references, execution context | Structured Markdown draft, validation summary, generation warnings/errors, and generation status |
-| Confluence Publisher | Approved Markdown draft, validation result, target space and parent page, authenticated Confluence connection, execution context | Confluence representation, page ID, create/update result, publishing status, HTTP/error details, and retry records |
+| Template Reader | Confluence Cloud template reference and execution context | Parsed template sections, placeholders, template version, or a redacted read/parse failure |
+| Repository Analyzer | Authorized repository content after filtering and redaction, repository metadata, branch or commit | Structured findings, source references, skipped-file records, missing-value markers, warnings, and extraction status |
+| Documentation Generator | Parsed template and analyzer findings | Structured Markdown draft, validation input, warnings, and generation status |
+| Documentation Validator | Markdown draft, template structure, analyzer evidence | Validation summary and validation status |
+| Confluence Publisher | Approved Markdown draft, successful validation, target space/parent, authenticated connection | Confluence representation, page ID, create/update result, publishing status, HTTP/error details, and retry information |
 
-The orchestrator passes outputs between agents and does not allow an agent to bypass the approval and validation gate. Sanitization and redaction occur before model, tool, persistence, logging, or external-service input boundaries. Contract versions are recorded with stage results.
+The contract schema, contract versioning rules, and agent communication mechanism are **Not Defined**. They must preserve execution traceability and must not permit publishing to bypass the approval gate.
 
-## 4. End-to-End Data Flow
+## 4. Repository Analysis Flow
 
-1. A Repository Administrator selects and authorizes one or more GitHub repositories.
-2. The orchestrator creates an execution ID and records the requesting identity and start time.
-3. The GitHub adapter verifies access and retrieves the requested repository reference.
-4. File filtering excludes unsupported or irrelevant content and records skipped items.
-5. Secret detection redacts sensitive values before sanitized content is available to agents or logs.
-6. The Template Reader reads and parses `Technical-App-Manifest-v1`. A failure stops the workflow and prevents publishing.
-7. The Repository Analyzer extracts supported application and repository information.
-8. The Documentation Generator applies findings to the template and creates the Markdown draft and validation summary.
-9. The Documentation Author/Reviewer reviews the draft, edits it if needed, and either rejects/regenerates or explicitly approves it.
-10. The validation gate confirms approval and successful validation.
-11. The Confluence Publisher converts the approved Markdown and creates or updates the target page.
-12. The orchestrator records status and audit events throughout the flow and closes the execution with duration and repository outcomes.
+1. Receive an explicitly authorized GitHub repository request.
+2. Create an execution ID and record identity and timestamp.
+3. Verify repository access and collect the requested branch or commit.
+4. Retrieve repository metadata and eligible content.
+5. Filter unsupported, binary, generated, vendor, and irrelevant content.
+6. Record analyzed and skipped files and languages.
+7. Redact secrets before repository content reaches prompts, tools, logs, artifacts, errors, or generated documentation.
+8. Analyze supported Java, JavaScript/TypeScript, and Python content.
+9. Extract the required application and repository information.
+10. Attach source references where available.
+11. Mark unavailable details as `Not available/Not found in repository`.
+12. Return findings, warnings, skipped-content records, metadata, and extraction status.
 
-For interrupted executions, the orchestrator reloads durable state, verifies the last completed transition, and resumes only from a safe state. Before retrying a publisher operation with an unknown result, it reconciles the target page to avoid duplicate creation.
+A repository with no usable content is marked `Unsupported`. Access, authentication, network, or processing failures receive the required repository-level status and do not stop other repositories.
 
-## 5. Repository Analysis Flow
+## 5. Documentation Template Processing Flow
 
-The Repository Analyzer follows this sequence:
+1. Request the mandatory `Technical-App-Manifest-v1` template from Confluence Cloud.
+2. Read and parse the template sections and placeholders.
+3. Record template version and processing status.
+4. Stop the workflow and prevent publishing if the template cannot be read or parsed.
+5. Pass the parsed template structure to the Documentation Generator.
 
-1. Confirm repository authorization and branch/commit context.
-2. Enumerate repository structure and identify source, configuration, dependency, README, documentation, build, deployment, and test files.
-3. Exclude binary, generated, vendor, irrelevant, and unsupported content according to configured limits.
-4. Record every skipped file or language and the reason.
-5. Detect and redact secrets before analysis content crosses an LLM, logging, artifact, or external-service boundary.
-6. Analyze supported Java, JavaScript/TypeScript, and Python content.
-7. Extract the required purpose, architecture, API, technology, setup, configuration, deployment, testing, documentation, risk, and metadata findings.
-8. Attach source references where available.
-9. Mark missing information as `Not available/Not found in repository`.
-10. Return findings, warnings, skipped-content records, and an extraction status to the orchestrator.
-
-Repository size, file-count, file-size, API-call, CPU, memory, storage, and processing-time limits are configurable. The orchestrator or resource-policy boundary records limit violations, exposes them in status, cleans up temporary data, assigns the required repository-level outcome, and continues other repository jobs. A repository with no usable content is reported as `Unsupported`; access and processing failures receive the required repository-level status.
+Template retrieval and parsing behavior beyond the mandatory success/failure outcome is **Not Defined**.
 
 ## 6. Documentation Generation Flow
 
-The Documentation Generator receives two controlled inputs: the parsed approved template and sanitized analyzer findings.
+1. Receive the parsed template and sanitized analyzer findings.
+2. Map evidence to the template sections and placeholders.
+3. Populate only evidence-supported information.
+4. Preserve the approved template structure.
+5. Include source references where available.
+6. Mark unavailable information as `Not available/Not found in repository`.
+7. Generate the structured Markdown preview/draft.
+8. Generate the validation summary.
+9. Present both artifacts to the Documentation Author/Reviewer.
+10. On rejection or a regeneration request, correct or regenerate the draft without inventing information.
 
-1. Match findings to the template's predefined sections and placeholders.
-2. Populate supported information with source references where available.
-3. Preserve the `Technical-App-Manifest-v1` structure.
-4. Mark unavailable information explicitly instead of guessing.
-5. Produce a structured Markdown preview/draft.
-6. Produce a validation summary for required sections, placeholders, secret redaction, unsupported claims, and format compatibility.
-7. Send both artifacts to the Documentation Author/Reviewer.
-8. On rejection or a regeneration request, retain usable findings and generate a corrected draft.
-9. On explicit approval, run the final validation gate before publishing.
+## 7. Documentation Validation
 
-The draft is the review artifact. It is converted to the required Confluence representation only after approval and successful validation.
+Validation must occur before approval and before publishing. It must check required sections, placeholders, template structure, secret redaction, unsupported claims, and Confluence format compatibility.
 
-Validation failure blocks approval and publishing, records the validation result, and returns the draft for correction or regeneration. Reviewer timeout or unavailability leaves the draft pending and does not publish it.
+A validation failure prevents approval/publishing and returns the documentation for correction or regeneration. The exact validation rules, severity model, and tooling are **Not Defined**.
 
-## 7. Confluence Synchronization Flow
+## 8. Confluence Synchronization and Publishing Flow
 
-The Confluence Publisher uses an authenticated, least-privilege Confluence Cloud connection with read/write permissions required for the template and target pages.
+1. Confirm explicit reviewer approval.
+2. Confirm successful documentation validation.
+3. Convert the approved Markdown draft to the required Confluence representation.
+4. Resolve the `Templates` space and `Technical-App-Manifest-v1` parent page.
+5. Locate the matching documentation page.
+6. Create the page if it does not exist; otherwise update it.
+7. Avoid duplicate pages.
+8. Preserve Confluence access restrictions.
+9. Record page ID, operation, result, HTTP status, errors, retries, and timestamps.
 
-1. Confirm the reviewer approval and successful validation result.
-2. Convert the approved Markdown draft to the required Confluence representation.
-3. Resolve the authorized `Templates` space and `Technical-App-Manifest-v1` parent page.
-4. Locate the matching documentation page using a deterministic repository identity and target hierarchy key.
-5. Acquire the configured uniqueness/concurrency control for the target identity.
-6. Reconcile the target page before mutation, especially after an ambiguous prior response.
-7. Create the page when no matching page exists; otherwise update the existing page.
-8. Preserve the authorized Confluence access restrictions.
-9. Record page ID, create/update operation, publishing result, HTTP status, errors, retries, and completion time.
+Publishing is triggered automatically only after explicit approval and successful validation. Transient failures use limited exponential-backoff retries. Authentication and permission failures are not repeatedly retried.
 
-Publishing is triggered automatically only after explicit approval and successful validation. No publishing occurs before approval. Conversion or validation failure blocks publishing. Transient failures use stage-specific, bounded retries with exponential backoff; authentication and permission failures are not repeatedly retried. Create/update operations must be idempotent or reconciled before retry.
+The exact page-matching key, concurrency behavior, retry count, retry classification, and ambiguous-response handling are **Not Defined**.
 
-## 8. Error Handling and Failure Isolation
+## 9. Data Flow Between Components
 
-Errors are structured, redacted, execution-scoped, and associated with the affected repository and stage.
+```text
+Authorized request
+  -> Authorization and input validation
+  -> GitHub Repository Adapter
+  -> File Filtering and Secret Redaction
+  -> Repository Analyzer
+  -> Template Reader
+  -> Documentation Generator
+  -> Documentation Validator
+  -> Markdown preview and validation summary
+  -> Reviewer approval or rejection
+  -> Approval gate
+  -> Confluence Publisher
+  -> Status report and audit trail
+```
 
-| Failure | Behavior |
-| --- | --- |
-| Inaccessible repository | Record a redacted access, authentication, or network reason; mark the repository `Failed` or `Blocked`; continue other repositories. |
-| Unsupported files or languages | Skip and record the file/language and reason; continue supported analysis. |
-| No usable repository content | Mark the repository `Unsupported`. |
-| Template read or parse failure | Stop the workflow and prevent publishing. |
-| Incomplete repository information | Continue generation and mark the value `Not available/Not found in repository`. |
-| Documentation-generation failure | Retain successful extraction, record the error, mark generation `Failed`, and prevent publishing. |
-| Markdown-to-Confluence conversion failure | Record a redacted error, mark publishing as `Failed`, retain the approved Markdown draft, and prevent the Confluence operation. |
-| Final validation failure | Record validation errors, keep publishing blocked, and return the draft for correction or regeneration. |
-| Confluence failure | Capture redacted HTTP/error details; retry transient failures with bounded exponential backoff; do not loop on authentication or permission failures. |
-| Reviewer unavailable or review timeout | Keep the draft pending, record the status, and do not publish. |
-| Status or audit persistence failure | Record the failure where possible, block dependent publishing or state transitions, and fail securely rather than proceeding without required traceability. |
-| Orchestrator interruption | Recover from durable state, reconcile ambiguous external operations, and resume only from a safe state. |
-| Invalid agent output | Reject the output, record a contract-validation failure, and prevent downstream processing. |
-| Resource-limit violation | Record the violated limit, clean up temporary data, assign the configured repository outcome, and continue other jobs. |
-| Security failure | Fail securely without exposing credentials or sensitive implementation details. |
-| One repository failure in a batch | Isolate the repository job and continue processing other repositories. |
+Status and audit events are produced throughout the flow. Each repository retains an independent outcome, and the execution ID connects repository analysis, generation, review, and publishing records.
 
-## 9. Security Considerations
-
-- Process only explicitly authorized repositories and respect existing repository permissions.
-- Use least-privilege identities for GitHub and Confluence operations.
-- Store credentials in an approved secure secret-management mechanism; never hard-code or commit them.
-- Detect and redact secrets before repository content is included in LLM prompts, logs, intermediate artifacts, errors, generated documentation, tools, or publishing operations.
-- Apply the same redaction and sensitive-content policy to source references, stored drafts, reviewer edits, status reports, audit records, and Confluence payloads.
-- Treat repository files as untrusted input and validate/sanitize content before use.
-- Use HTTPS/TLS for data in transit and encryption at rest for sensitive stored data where supported.
-- Treat generated documentation as potentially confidential and publish only to the authorized Confluence space and page hierarchy.
-- Do not send repository content or generated documentation to unauthorized third-party services.
-- Retain repository data, intermediate artifacts, and logs only for the required period and securely remove temporary data.
-- Keep audit records free of credentials and sensitive content while recording identity, repository, processing activity, review, publishing, status, errors, retries, and timestamps.
-- Enforce role checks for repository administration, review and approval, publishing, platform administration, and read-only auditing.
-
-## 10. External Integrations
+## 10. External Systems and Integrations
 
 ### GitHub
 
-Used for authorized repository access, branch/commit selection, source retrieval, repository metadata, and repository access status. GitHub availability, rate limits, and API behavior are external dependencies.
+Provides authorized repository access, repository metadata, branch/commit selection, and source content. GitHub availability, rate limits, and API behavior are external dependencies.
 
 ### Confluence Cloud
 
-Used to read the mandatory `Technical-App-Manifest-v1` template and to create or update generated documentation under the `Templates` space and the specified parent page. The connection requires authenticated read/write permissions appropriate to those operations.
+Provides the mandatory template and receives approved generated documentation in the `Templates` space under `Technical-App-Manifest-v1`. It requires an authenticated API connection with appropriate permissions.
 
-### LLM or agent runtime
+### LLM or Agent Runtime
 
-The agent runtime may be used for repository interpretation and documentation generation. Repository content must be sanitized and secrets redacted before it is included in model prompts. No unauthorized third-party service may receive repository content or generated documentation.
+May support repository interpretation and documentation generation. The provider, model, prompts, data-processing terms, and configuration are **Not Defined**. Repository content must be sanitized and secrets redacted before use.
 
-## 11. Technology Recommendations
+### Credential and Secret Management
 
-These are high-level recommendations consistent with the requirements; they do not add implementation constraints.
+Credentials must be stored through an approved secure mechanism. The selected product or service is **Not Defined**.
 
-- **Service runtime:** Node.js 20+, consistent with the existing project runtime.
-- **HTTP service:** Express 5 for request handling and health/status endpoints, consistent with the existing application.
-- **Orchestration:** A durable, execution-scoped workflow coordinator with bounded concurrency and independent repository jobs.
-- **Review and operations:** A role-protected interface or API for drafts, validation summaries, progress, reviewer decisions, and publishing status.
-- **Scheduling and policy enforcement:** A bounded job scheduler or equivalent orchestrator capability with backpressure, cancellation, per-repository resource budgets, and limit-violation status.
-- **Agent boundaries:** Implement the Template Reader, Repository Analyzer, Documentation Generator, and Confluence Publisher as separately testable modules with explicit structured input/output contracts.
-- **GitHub integration:** Use the GitHub API through an authenticated adapter and apply configurable API-call and timeout limits.
-- **Confluence integration:** Use the Confluence Cloud REST API through an authenticated adapter that supports template reads and page create/update operations.
-- **Validation and redaction:** Use structured parsers and dedicated secret-detection/redaction stages before model, logging, artifact, and publishing boundaries.
-- **State and audit persistence:** Use a durable store for execution state, status reports, reviewer decisions, audit records, and retry history, with retention controls.
-- **Observability:** Emit structured logs and metrics keyed by execution ID, repository, stage, duration, file counts, retries, errors, and publishing result.
-- **Testing:** Use unit and integration tests for each agent contract, controlled failure paths, secret redaction, approval gating, template preservation, and Confluence create/update behavior.
-- **Monitoring:** Evaluate structured events and metrics for slow/failed jobs, repeated API failures, authentication problems, resource-limit violations, and publishing failures.
+## 11. Technology Choices and Rationale
 
-## 12. Architecture Constraints
+GitHub and Confluence Cloud integrations are required. The implementation technology for the service runtime, HTTP layer, API clients, persistence, queues, workflow orchestration, review interface, validation, secret management, observability, and Confluence conversion is **Not Defined** by `requirements.md` and must not be selected solely from this document.
 
-- The mandatory template must be read and parsed before documentation generation can proceed.
-- No documentation may be published before explicit reviewer approval and successful validation.
-- Unsupported or missing repository information must be reported, not guessed.
-- A failure in one repository must not stop other repository jobs.
-- Secrets must never appear in prompts, logs, errors, intermediate artifacts, or generated documentation.
-- The architecture must support at least five concurrent repositories initially, configurable resource limits, and the performance targets defined in the requirements.
-- Express and HTTP health/status endpoints are optional repository-context recommendations, not requirements-derived architecture constraints.
+## 12. Error Handling and Failure Flow
+
+| Failure | Required behavior |
+| --- | --- |
+| Inaccessible repository | Detect access/authentication/network errors, record a redacted reason, mark `Failed` or `Blocked`, and continue other repositories. |
+| Unsupported files/languages | Skip and record file/reason; continue supported analysis. |
+| No usable content | Mark the repository `Unsupported`. |
+| Template read/parse failure | Stop the workflow and do not publish. |
+| Incomplete information | Continue generation and mark unavailable values explicitly. |
+| Documentation-generation failure | Retain successful extraction, record the error, mark generation `Failed`, and prevent publishing. |
+| Confluence publishing failure | Capture HTTP status and redacted error details; retry transient failures with limited exponential backoff; do not repeatedly retry authentication/permission failures. |
+| Security failure | Fail securely without exposing credentials or sensitive implementation details. |
+| Failure in one repository | Continue processing other repositories. |
+
+Handling for validation conversion failure, reviewer timeout, persistence failure, process interruption, resource-limit violations, malformed agent output, and ambiguous Confluence responses is **Not Defined** by the requirements.
+
+## 13. Security Considerations
+
+- Process only explicitly authorized repositories.
+- Respect repository permissions and use least-privilege GitHub and Confluence identities.
+- Store GitHub, Confluence, MCP, and other credentials in an approved secure secret-management mechanism.
+- Never hard-code or commit credentials.
+- Detect and redact secrets before prompts, logs, intermediate artifacts, errors, or generated documentation.
+- Treat repository files as untrusted input and validate/sanitize them before use.
+- Use HTTPS/TLS for data in transit and encryption at rest for sensitive stored data where supported.
+- Treat generated documentation as potentially confidential.
+- Publish only to the authorized Confluence space and preserve applicable access restrictions.
+- Do not send repository content or generated documentation to unauthorized third-party services.
+- Retain data and logs only for the required period and securely remove temporary data.
+- Keep audit records free of credentials and sensitive content.
+
+## 14. Logging and Audit Considerations
+
+Structured logs and audit records must support execution traceability and contain the required identity, repository, stage, timestamp, status, warning, error, retry, review, generation, and Confluence publishing information.
+
+Audit records must include the user/service identity, repository, processing timestamps, template version, generation result, reviewer/approval details, Confluence page ID, create/update operation, publishing result, errors, and retries.
+
+Credentials and sensitive content must be excluded. Log schema, audit schema, monitoring platform, retention duration, and alert destinations are **Not Defined**.
+
+## 15. Scalability and Maintainability Considerations
+
+- Support at least five repositories concurrently initially.
+- Make concurrency configurable for future scaling.
+- Isolate repository failures.
+- Apply configurable CPU, memory, storage, API-rate, file-size, and processing-time limits.
+- Keep the four required agents separated by responsibility and independently testable.
+- Use integration boundaries for GitHub and Confluence so their external behavior is isolated.
+- Preserve shared execution IDs and status structures across all stages.
+- Keep template reading, repository analysis, generation, validation, review, and publishing as distinct workflow stages.
+
+The queueing model, deployment topology, persistence scaling strategy, and horizontal-scaling mechanism are **Not Defined**.
+
+## 16. Requirements Traceability
+
+| Architecture area | Requirement traceability |
+| --- | --- |
+| Authorized intake, execution ID, branch/commit, limits | FR-1.1 to FR-1.5; AC-1; AC-13 |
+| Repository analysis and missing information | FR-2.1 to FR-2.2; AC-2 |
+| Filtering and secret redaction | FR-3.1 to FR-3.3; SEC-1 to SEC-2; AC-3 to AC-4 |
+| Template reading and Markdown generation | FR-4.1 to FR-4.7; AC-5 to AC-6 |
+| Review and approval | FR-5.1 to FR-5.4; AC-6 to AC-7 |
+| Confluence create/update publishing | FR-6.1 to FR-6.7; AC-7 to AC-8; AC-10 |
+| Status, metadata, and audit | FR-7.1 to FR-8.1; SEC-3; AC-9; AC-12 |
+| Error handling and repository isolation | ERR-1 to ERR-8; AC-9 to AC-11 |
+| Security and privacy | SEC-4 to SEC-11; AC-3; AC-12 |
+| Performance, reliability, usability, compatibility, observability | NFR-1 to NFR-20; AC-6; AC-10 to AC-13 |
+
+## 17. Explicit Undefined Decisions
+
+The following are intentionally not selected because they are not established in `requirements.md`:
+
+- LLM provider, model, prompt format, and agent runtime.
+- Exact Confluence storage representation and conversion/parser technology.
+- Exact documentation validation rules, tooling, and severity model.
+- Confluence matching key, duplicate-prevention mechanism, and concurrency control.
+- Persistence, queue, and workflow-orchestration technologies.
+- Review interface and user-interface technology.
+- Credential/secret-management product.
+- Log, metric, monitoring, and alerting platforms.
+- Retry count, retry classification details, and ambiguous-response handling.
+- Retention duration and exact status/audit schemas.
+- Handling for validation conversion failure, reviewer timeout, persistence failure, process interruption, resource-limit violations, and malformed agent output.
