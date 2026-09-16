@@ -111,6 +111,25 @@ describe("Repository Analyzer", () => {
     ).toBe(NOT_AVAILABLE);
   });
 
+  test("should detect configuration files", () => {
+    expect(result.configuration.files).toEqual(
+      expect.arrayContaining([
+        "src/config.js"
+      ])
+    );
+  });
+
+  test("should detect environment variables from source files", () => {
+    expect(result.configuration.environmentVariables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "PORT",
+          source: "src/index.js"
+        })
+      ])
+    );
+  });
+
   test("should record ignored directories as skipped", () => {
     const skippedFiles = result.skipped.map(
       (item) => item.file

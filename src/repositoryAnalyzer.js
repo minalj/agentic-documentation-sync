@@ -217,6 +217,110 @@ function readPackageJson(rootDir, files) {
   }
 }
 
+
+function detectConfiguration(rootDir, files) {
+  const configurationFiles = [];
+  const environmentVariables = [];
+
+  const configFileNames = new Set([
+    ".env",
+    ".env.example",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    "config.js",
+    "config.json",
+    "config.yaml",
+    "config.yml",
+    "application.properties",
+    "application.yml",
+    "application.yaml"
+  ]);
+
+  for (const file of files) {
+    const baseName = path.basename(file.path);
+
+    if (configFileNames.has(baseName)) {
+      configurationFiles.push(file.path);
+    }
+
+    const extension = path.extname(file.path).toLowerCase();
+
+    if (
+      ![
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".java",
+        ".py",
+        ".json",
+        ".yml",
+        ".yaml",
+        ".properties"
+      ].includes(extension)
+    ) {
+      continue;
+    }
+
+    let content;
+
+    try {
+      content = fs.readFileSync(
+        path.join(rootDir, file.path),
+        "utf8"
+      );
+    } catch {
+      continue;
+    }
+
+    const patterns = [
+      /process\.env\.([A-Z][A-Z0-9_]*)/g,
+      /System\.getenv\(\s*["']([A-Z][A-Z0-9_]*)["']\s*\)/g
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+
+      while ((match = pattern.exec(content)) !== null) {
+        environmentVariables.push({
+          name: match[1],
+          source: file.path
+        });
+      }
+    }
+  }
+
+  const uniqueConfigurationFiles = [
+    ...new Set(configurationFiles)
+  ];
+
+  const uniqueEnvironmentVariables =
+    environmentVariables.filter(
+      (item, index, array) =>
+        index ===
+        array.findIndex(
+          (candidate) =>
+            candidate.name === item.name &&
+            candidate.source === item.source
+        )
+    );
+
+  return {
+    files: uniqueConfigurationFiles.length
+      ? uniqueConfigurationFiles
+      : NOT_AVAILABLE,
+
+    environmentVariables: uniqueEnvironmentVariables.length
+      ? uniqueEnvironmentVariables
+      : NOT_AVAILABLE,
+
+    profiles: NOT_AVAILABLE,
+
+    requiredValues: NOT_AVAILABLE
+  };
+}
+
 function analyzeRepository(rootDir, options = {}) {
   const absoluteRoot = path.resolve(rootDir);
 
@@ -275,6 +379,7 @@ function analyzeRepository(rootDir, options = {}) {
     );
 
   const entryPoints = detectEntryPoints(files);
+  const configuration = detectConfiguration(absoluteRoot, files);
   const apiEndpoints = detectApiEndpoints(absoluteRoot, files);
 
   const applicationName =
@@ -371,12 +476,10 @@ function analyzeRepository(rootDir, options = {}) {
     },
 
     configuration: {
-      files: configurationFiles.length
-        ? configurationFiles
-        : NOT_AVAILABLE,
-      environmentVariables: NOT_AVAILABLE,
-      profiles: NOT_AVAILABLE,
-      requiredValues: NOT_AVAILABLE
+      files: configuration.files,
+      environmentVariables: configuration.environmentVariables,
+      profiles: configuration.profiles,
+      requiredValues: configuration.requiredValues
     },
 
     deployment: {
