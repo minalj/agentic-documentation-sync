@@ -91,7 +91,20 @@ describe("Repository Analyzer", () => {
 
     expect(
       result.apisAndInterfaces.endpoints
-    ).toBe(NOT_AVAILABLE);
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "GET",
+          path: "/",
+          source: "src/index.js"
+        }),
+        expect.objectContaining({
+          method: "GET",
+          path: "/health",
+          source: "src/index.js"
+        })
+      ])
+    );
 
     expect(
       result.deployment.method

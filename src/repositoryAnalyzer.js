@@ -1,6 +1,59 @@
 const fs = require("fs");
 const path = require("path");
 
+
+function detectApiEndpoints(rootDir, files) {
+  const endpoints = [];
+
+  const supportedExtensions = new Set([
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".java",
+    ".py"
+  ]);
+
+  for (const file of files) {
+    const extension = path.extname(file.path).toLowerCase();
+
+    if (!supportedExtensions.has(extension)) {
+      continue;
+    }
+
+    let content;
+
+    try {
+      content = fs.readFileSync(
+        path.join(rootDir, file.path),
+        "utf8"
+      );
+    } catch {
+      continue;
+    }
+
+    const patterns = [
+      /\bapp\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]/g,
+      /\brouter\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]/g,
+      /\brouter\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]/g
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+
+      while ((match = pattern.exec(content)) !== null) {
+        endpoints.push({
+          method: match[1].toUpperCase(),
+          path: match[2],
+          source: file.path
+        });
+      }
+    }
+  }
+
+  return endpoints;
+}
+
 const NOT_AVAILABLE = "Not available/Not found in repository";
 
 const IGNORED_DIRECTORIES = new Set([
@@ -222,6 +275,7 @@ function analyzeRepository(rootDir, options = {}) {
     );
 
   const entryPoints = detectEntryPoints(files);
+  const apiEndpoints = detectApiEndpoints(absoluteRoot, files);
 
   const applicationName =
     packageMetadata?.name ||
@@ -293,10 +347,10 @@ function analyzeRepository(rootDir, options = {}) {
     },
 
     apisAndInterfaces: {
-      rest: NOT_AVAILABLE,
+      rest: apiEndpoints.length ? true : NOT_AVAILABLE,
       graphql: NOT_AVAILABLE,
       soap: NOT_AVAILABLE,
-      endpoints: NOT_AVAILABLE,
+      endpoints: apiEndpoints.length ? apiEndpoints : NOT_AVAILABLE,
       authentication: NOT_AVAILABLE,
       externalServices: NOT_AVAILABLE
     },
