@@ -321,6 +321,141 @@ function detectConfiguration(rootDir, files) {
   };
 }
 
+function detectArchitecture(rootDir, files, entryPoints) {
+  const components = [];
+  const responsibilities = [];
+  const communication = [];
+  const externalSystems = [];
+  const integrations = [];
+  const patterns = [];
+
+  const sourceFiles = files.filter((file) =>
+    /\.(js|jsx|ts|tsx|java|py)$/i.test(file.path)
+  );
+
+  const directories = [
+    ...new Set(
+      sourceFiles
+        .map((file) => {
+          const parts = file.path.split("/");
+          return parts.length > 1 ? parts[0] : null;
+        })
+        .filter(Boolean)
+    )
+  ];
+
+  directories.forEach((directory) => {
+    components.push(directory);
+  });
+
+  if (sourceFiles.some((file) => /^src\//.test(file.path))) {
+    responsibilities.push({
+      component: "src",
+      responsibility: "Application source code and runtime logic"
+    });
+  }
+
+  if (files.some((file) => /^tests?\//.test(file.path))) {
+    components.push("tests");
+    responsibilities.push({
+      component: "tests",
+      responsibility: "Automated test coverage"
+    });
+  }
+
+  if (files.some((file) => /(^|\/)config\./i.test(file.path))) {
+    components.push("configuration");
+    responsibilities.push({
+      component: "configuration",
+      responsibility: "Application configuration"
+    });
+  }
+
+  for (const file of sourceFiles) {
+    let content;
+
+    try {
+      content = fs.readFileSync(
+        path.join(rootDir, file.path),
+        "utf8"
+      );
+    } catch {
+      continue;
+    }
+
+    if (
+      /\b(require|import)\s*\(?\s*["'](?:express|axios|node-fetch|https?|pg|mysql|mongodb|mongoose)/i.test(
+        content
+      )
+    ) {
+      communication.push({
+        source: file.path,
+        type: "module_or_external_dependency"
+      });
+    }
+
+    if (
+      /\b(express|axios|node-fetch|fetch\s*\(|https?\.request|https?\.get)\b/i.test(
+        content
+      )
+    ) {
+      integrations.push({
+        source: file.path,
+        type: "HTTP integration"
+      });
+    }
+  }
+
+  if (
+    sourceFiles.some((file) =>
+      /(^|\/)(routes?|controllers?|services?|models?)(\/|$)/i.test(
+        file.path
+      )
+    )
+  ) {
+    patterns.push("Layered architecture");
+  }
+
+  if (entryPoints.length && sourceFiles.some((file) =>
+    file.path === "src/index.js" || /(^|\/)main\.(js|ts|java|py)$/i.test(file.path)
+  )) {
+    patterns.push("Application entry-point based architecture");
+  }
+
+  const uniqueComponents = [...new Set(components)];
+
+  return {
+    overallArchitecture:
+      uniqueComponents.length > 1
+        ? "Modular application structure"
+        : NOT_AVAILABLE,
+
+    components: uniqueComponents.length
+      ? uniqueComponents
+      : NOT_AVAILABLE,
+
+    responsibilities: responsibilities.length
+      ? responsibilities
+      : NOT_AVAILABLE,
+
+    communication: communication.length
+      ? communication
+      : NOT_AVAILABLE,
+
+    architecturalPatterns: patterns.length
+      ? patterns
+      : NOT_AVAILABLE,
+
+    externalSystems: externalSystems.length
+      ? externalSystems
+      : NOT_AVAILABLE,
+
+    integrations: integrations.length
+      ? integrations
+      : NOT_AVAILABLE
+  };
+}
+
 function analyzeRepository(rootDir, options = {}) {
   const absoluteRoot = path.resolve(rootDir);
 
@@ -380,6 +515,11 @@ function analyzeRepository(rootDir, options = {}) {
 
   const entryPoints = detectEntryPoints(files);
   const configuration = detectConfiguration(absoluteRoot, files);
+  const architecture = detectArchitecture(
+    absoluteRoot,
+    files,
+    entryPoints
+  );
   const apiEndpoints = detectApiEndpoints(absoluteRoot, files);
 
   const applicationName =
@@ -440,15 +580,13 @@ function analyzeRepository(rootDir, options = {}) {
     },
 
     architecture: {
-      overallArchitecture: NOT_AVAILABLE,
-      components: entryPoints.length
-        ? entryPoints
-        : NOT_AVAILABLE,
-      responsibilities: NOT_AVAILABLE,
-      communication: NOT_AVAILABLE,
-      architecturalPatterns: NOT_AVAILABLE,
-      externalSystems: NOT_AVAILABLE,
-      integrations: NOT_AVAILABLE
+      overallArchitecture: architecture.overallArchitecture,
+      components: architecture.components,
+      responsibilities: architecture.responsibilities,
+      communication: architecture.communication,
+      architecturalPatterns: architecture.architecturalPatterns,
+      externalSystems: architecture.externalSystems,
+      integrations: architecture.integrations
     },
 
     apisAndInterfaces: {

@@ -87,7 +87,7 @@ describe("Repository Analyzer", () => {
 
     expect(
       result.architecture.overallArchitecture
-    ).toBe(NOT_AVAILABLE);
+    ).toBe("Modular application structure");
 
     expect(
       result.apisAndInterfaces.endpoints
